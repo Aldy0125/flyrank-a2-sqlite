@@ -114,6 +114,29 @@ The following operations were tested using the FastAPI interactive documentation
 - Handle a task that does not exist.
 - Verify that task data persists after restarting the server.
 
+## Evidence and Testing
+
+### SQLite Database
+
+The database contains the `tasks` table with three initial task records.
+
+![SQLite database table](database-tasks.png)
+
+### SQL Query Result
+
+The following SQL query was executed successfully in DB Browser for SQLite:
+
+```sql
+SELECT id, title, done
+FROM tasks
+ORDER BY id;
+```
+
+The query returned three rows without errors.
+
+![SQL query execution result](sql-query-result.png)
+
+
 ## Author
 
 Aldy Putra Manurung
