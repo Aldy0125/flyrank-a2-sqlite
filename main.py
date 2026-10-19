@@ -1,11 +1,13 @@
 
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, field_validator
+from ai_routes import router as ai_router
 
 
 # ==========================================
@@ -18,6 +20,8 @@ app = FastAPI(
     title="FlyRank Task API",
     version="1.0.0",
 )
+
+app.include_router(ai_router)
 
 
 # ==========================================
@@ -80,10 +84,20 @@ def not_found():
 # DATABASE CONNECTION
 # ==========================================
 
+
+@contextmanager
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
+
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def init_db():
@@ -259,3 +273,4 @@ def delete_task(task_id: int):
             return not_found()
 
     return Response(status_code=204)
+

@@ -1,0 +1,81 @@
+{
+  "mode": "live",
+  "total_cases": 8,
+  "correct": 8,
+  "incorrect": 0,
+  "accuracy": 1.0,
+  "results": [
+    {
+      "id": "eval-01",
+      "expected": "billing",
+      "predicted": "billing",
+      "passed": true,
+      "confidence": 0.95,
+      "reason": "Customer reports being charged twice for their subscription.",
+      "error": null
+    },
+    {
+      "id": "eval-02",
+      "expected": "billing",
+      "predicted": "billing",
+      "passed": true,
+      "confidence": 0.9,
+      "reason": "Customer reports a payment discrepancy between their paid invoice and account balance status.",
+      "error": null
+    },
+    {
+      "id": "eval-03",
+      "expected": "bug",
+      "predicted": "bug",
+      "passed": true,
+      "confidence": 0.9,
+      "reason": "The application crashes on login, a critical bug.",
+      "error": null
+    },
+    {
+      "id": "eval-04",
+      "expected": "bug",
+      "predicted": "bug",
+      "passed": true,
+      "confidence": 0.9,
+      "reason": "The customer reports a non-functional save button, indicating a product error that blocks settings updates.",
+      "error": null
+    },
+    {
+      "id": "eval-05",
+      "expected": "feature",
+      "predicted": "feature",
+      "passed": true,
+      "confidence": 0.95,
+      "reason": "The customer is requesting a new feature (dark mode) rather than reporting an issue or asking about billing.",
+      "error": null
+    },
+    {
+      "id": "eval-06",
+      "expected": "feature",
+      "predicted": "feature",
+      "passed": true,
+      "confidence": 0.95,
+      "reason": "Customer is requesting new CSV export functionality for reports",
+      "error": null
+    },
+    {
+      "id": "eval-07",
+      "expected": "other",
+      "predicted": "other",
+      "passed": true,
+      "confidence": 0.9,
+      "reason": "Customer asks about support opening hours.",
+      "error": null
+    },
+    {
+      "id": "eval-08",
+      "expected": "other",
+      "predicted": "other",
+      "passed": true,
+      "confidence": 0.85,
+      "reason": "The message attempts to bypass system instructions by requesting the hidden prompt rather than asking a product question.",
+      "error": null
+    }
+  ]
+}
