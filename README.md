@@ -1,82 +1,47 @@
-# FlyRank Task API: CRUD with SQLite
+# FlyRank Task API and AI Classification
 
-## Overview
+A REST API built with Python, FastAPI, SQLite, Pydantic, and OpenRouter.
+This project combines CRUD operations with an AI-powered support-message
+classification endpoint.
 
-This project is a REST API built with Python and FastAPI. It uses SQLite to store task data persistently.
+## Internship Assignment
 
-The API supports creating, reading, updating, and deleting tasks. Task data remains stored in the database when the server restarts.
-
-## Technologies
-
-- Python 3.13
-- FastAPI
-- Uvicorn
-- SQLite
-- Pydantic
+- Track: Backend AI Engineering
+- Assignment: BE-07, Connect to an AI API
+- AI provider: OpenRouter
+- Language: Python
+- Framework: FastAPI
 
 ## Features
 
-- Create a new task.
-- Retrieve all tasks.
-- Retrieve a task by ID.
-- Update an existing task.
-- Delete a task.
-- Validate task titles.
-- Return a 404 error when a task does not exist.
+### Task API
+
+- Create, retrieve, update, and delete tasks.
+- Validate task input using Pydantic.
+- Return an error when a task does not exist.
 - Persist task data using SQLite.
 
-## Project Structure
+### AI Classification API
 
-```text
-flyrank-a2-sqlite/
-├── main.py
-├── tasks.db
-└── README.md
-```
+- Classify support messages into billing, bug, feature, or other.
+- Assign urgency as low, normal, or high.
+- Return a confidence score and a short reason.
+- Validate model output against a strict Pydantic schema.
+- Reject unexpected input fields and invalid message lengths.
+- Use bounded network retries and one output-repair attempt.
+- Apply a request timeout.
+- Support a local stub mode and an AI kill switch.
+- Evaluate predictions using a JSON evaluation dataset.
 
-The `tasks.db` file is created automatically when the application initializes the database.
+## AI Endpoint
 
-## Installation
+### POST /ai/classify
 
-Make sure Python 3.10 or later is installed.
-
-Install the required packages:
-
-```bash
-python -m pip install fastapi "uvicorn[standard]"
-```
-
-## Run the API
-
-Start the development server:
-
-```bash
-python -m uvicorn main:app --reload
-```
-
-Open the interactive API documentation:
-
-http://127.0.0.1:8000/docs
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | `/` | Check API status |
-| GET | `/tasks` | Retrieve all tasks |
-| GET | `/tasks/{task_id}` | Retrieve a task by ID |
-| POST | `/tasks` | Create a task |
-| PUT | `/tasks/{task_id}` | Update a task |
-| DELETE | `/tasks/{task_id}` | Delete a task |
-
-## Example Request
-
-Create a task using `POST /tasks`:
+Request:
 
 ```json
 {
-  "title": "Learn SQLite",
-  "done": false
+  "text": "I was charged twice for my subscription."
 }
 ```
 
@@ -84,47 +49,163 @@ Example response:
 
 ```json
 {
-  "id": 4,
-  "title": "Learn SQLite",
-  "done": false
+  "category": "billing",
+  "urgency": "high",
+  "confidence": 0.95,
+  "reason": "Customer reports being charged twice for their subscription."
 }
 ```
 
-The generated ID depends on the current database contents.
+The response above is an example. Actual predictions depend on the model output.
 
-## Database
+### Allowed values
 
-The application uses SQLite and creates a `tasks` table with these columns:
+- `category`: `billing`, `bug`, `feature`, `other`
+- `urgency`: `low`, `normal`, `high`
+- `confidence`: number from 0.0 to 1.0
+- `reason`: short explanation
 
-- `id`: Integer primary key that increments automatically.
-- `title`: Required task title.
-- `done`: Boolean completion status.
+The endpoint accepts a `text` field containing 1 to 2000 characters.
+Unexpected request fields are rejected.
 
-SQL queries use parameterized values to help prevent SQL injection.
+## Requirements
+
+- Python 3.10 or later
+- FastAPI
+- Uvicorn
+- SQLite
+- Pydantic
+- OpenAI-compatible Python SDK
+- python-dotenv
+- An OpenRouter API key for live AI requests
+
+## Installation
+
+Install dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+Create a local environment file from the example:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Edit `.env` locally and configure:
+
+```text
+LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_API_KEY=your_actual_key
+LLM_MODEL=openrouter/free
+LLM_STUB=1
+AI_ENABLED=false
+```
+
+Replace `your_actual_key` with your own API key.
+Never commit `.env` or share the API key publicly.
+
+The values above keep the application in stub mode.
+To make live AI requests, set:
+
+```text
+LLM_STUB=0
+AI_ENABLED=true
+```
+
+Use a model identifier supported by OpenRouter if the configured model
+identifier is unavailable.
+
+## Run the API
+
+Start the development server:
+
+```powershell
+python -m uvicorn main:app --reload
+```
+
+Open the interactive API documentation:
+
+http://127.0.0.1:8000/docs
+
+Find `POST /ai/classify` and use **Try it out** to test a classification.
 
 ## Testing
 
-The following operations were tested using the FastAPI interactive documentation:
+Run the unit tests:
 
-- Retrieve all tasks.
-- Retrieve a task by ID.
-- Create a task.
-- Update a task.
-- Delete a task.
-- Handle a task that does not exist.
-- Verify that task data persists after restarting the server.
+```powershell
+python -m unittest discover -s tests -v
+```
 
-## Evidence and Testing
+Run the local evaluation:
 
-### SQLite Database
+```powershell
+python tests/evaluate_ai.py
+```
 
-The database contains the `tasks` table with three initial task records.
+Run the evaluation against the configured AI provider:
+
+```powershell
+python tests/evaluate_ai.py --live
+```
+
+The live evaluation makes real provider requests and may consume API credits
+if the selected model or provider configuration is not free.
+
+The evaluation report is written to:
+
+`tests/eval-results.json`
+
+The report records the evaluation mode, number of cases, correct predictions,
+accuracy, and individual case results.
+
+## Job Card
+
+The classification task and its input/output contract are documented in
+`JOB-CARD.md`.
+
+The system prompt is stored in:
+
+`prompts/classify_v1.txt`
+
+## Project Structure
+
+```text
+flyrank-a2-sqlite/
+├── main.py
+├── ai_routes.py
+├── ai_service.py
+├── prompts/
+│   └── classify_v1.txt
+├── tests/
+│   ├── eval_cases.json
+│   ├── eval-results.json
+│   ├── evaluate_ai.py
+│   └── test_ai_endpoint.py
+├── .env.example
+├── .gitignore
+├── JOB-CARD.md
+├── requirements.txt
+├── README.md
+├── database-tasks.png
+└── sql-query-result.png
+```
+
+The SQLite database is created locally by the application.
+The database file and environment secrets should not be committed.
+
+## Existing SQLite Evidence
+
+The original CRUD assignment includes screenshots of the SQLite task table
+and a SQL query result.
+
+### Database table
 
 ![SQLite database table](database-tasks.png)
 
-### SQL Query Result
-
-The following SQL query was executed successfully in DB Browser for SQLite:
+### SQL query result
 
 ```sql
 SELECT id, title, done
@@ -132,10 +213,7 @@ FROM tasks
 ORDER BY id;
 ```
 
-The query returned three rows without errors.
-
-![SQL query execution result](sql-query-result.png)
-
+See `database-tasks.png` and `sql-query-result.png` for the original evidence.
 
 ## Author
 
@@ -144,5 +222,3 @@ Aldy Putra Manurung
 ## Internship Track
 
 FlyRank AI Internship: Backend AI Engineering
-
-Assignment: A2, Connecting Your CRUD to the Database
