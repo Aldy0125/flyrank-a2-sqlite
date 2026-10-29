@@ -289,4 +289,3 @@ Potential extensions include:
 - Improved report monitoring and failure recovery.
 
 Scheduled generation and durable job processing are separate capabilities from the background tasks implemented in this version.
-'@ | Set-Content -Path .\pdf-report-generator\README.md -Encoding utf8
