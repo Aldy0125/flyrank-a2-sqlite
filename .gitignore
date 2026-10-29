@@ -8,3 +8,9 @@ venv/
 .env
 .env.*
 !.env.example
+# BE-08 PDF Report Generator
+pdf-report-generator/.venv/
+pdf-report-generator/__pycache__/
+pdf-report-generator/*.py[cod]
+pdf-report-generator/report.db
+pdf-report-generator/reports/
