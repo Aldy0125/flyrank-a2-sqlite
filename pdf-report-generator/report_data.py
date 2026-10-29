@@ -12,7 +12,7 @@ def get_report_data():
     today = date.today()
     first_day = today - timedelta(days=6)
 
-    # closing memastikan koneksi SQLite ditutup
+    # Pastikan koneksi SQLite ditutup setelah query selesai
     with closing(sqlite3.connect(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
 
@@ -56,13 +56,26 @@ def get_report_data():
             today.isoformat(),
         )).fetchall()
 
+        # 5. Ambil seluruh pesanan untuk tabel PDF
+        all_orders = conn.execute("""
+            SELECT
+                id,
+                customer,
+                product,
+                ROUND(amount, 2) AS amount,
+                date(created_at) AS created_at
+            FROM orders
+            ORDER BY date(created_at) DESC, id DESC
+        """).fetchall()
+
     # Petakan jumlah pesanan berdasarkan tanggal
     daily_map = {
         row["day"]: row["total_orders"]
         for row in daily_rows
     }
 
-    # Sertakan tanggal yang tidak memiliki pesanan
+    # Pastikan ketujuh tanggal muncul,
+    # termasuk tanggal tanpa pesanan
     orders_per_day = []
 
     for offset in range(6, -1, -1):
@@ -74,6 +87,7 @@ def get_report_data():
             "orders": daily_map.get(day_string, 0),
         })
 
+    # Gabungkan seluruh hasil laporan
     return {
         "total_orders": total_orders,
         "total_revenue": total_revenue,
@@ -81,4 +95,19 @@ def get_report_data():
             dict(row) for row in top_products
         ],
         "orders_per_day": orders_per_day,
+        "all_orders": [
+            dict(row) for row in all_orders
+        ],
     }
+
+
+if __name__ == "__main__":
+    import json
+
+    report = get_report_data()
+
+    print(json.dumps(
+        report,
+        indent=2,
+        ensure_ascii=False
+    ))
