@@ -14,3 +14,5 @@ pdf-report-generator/__pycache__/
 pdf-report-generator/*.py[cod]
 pdf-report-generator/report.db
 pdf-report-generator/reports/
+
+pdf-report-generator/my-report.pdf
