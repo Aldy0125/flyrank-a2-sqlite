@@ -1,4 +1,5 @@
 
+import logging
 import sqlite3
 
 from contextlib import closing
@@ -6,7 +7,13 @@ from datetime import date, datetime
 from pathlib import Path
 from threading import Lock
 
-from fastapi import FastAPI, HTTPException, Response, status
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    HTTPException,
+    Response,
+    status,
+)
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -19,7 +26,10 @@ REPORTS_DIR = BASE_DIR / "reports"
 
 app = FastAPI(title="PDF Report Generator")
 
-# Serialize report creation within this application process.
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Melindungi proses pembuatan job dalam satu proses aplikasi.
 REPORT_LOCK = Lock()
 
 
@@ -28,20 +38,197 @@ class ReportRequest(BaseModel):
 
 
 def init_reports_table():
-    """Create the report metadata table if it does not exist."""
+    """Create the report table and migrate older database schemas."""
 
-    with closing(sqlite3.connect(DB_PATH)) as conn:
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    with closing(sqlite3.connect(DB_PATH, timeout=30)) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS reports (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                path TEXT NOT NULL,
-                created_at TEXT NOT NULL
+                path TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                error TEXT,
+                completed_at TEXT
             )
         """)
+
+        # Support database files created by earlier versions.
+        columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(reports)"
+            ).fetchall()
+        }
+
+        if "status" not in columns:
+            conn.execute("""
+                ALTER TABLE reports
+                ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'
+            """)
+
+        if "error" not in columns:
+            conn.execute("""
+                ALTER TABLE reports
+                ADD COLUMN error TEXT
+            """)
+
+        if "completed_at" not in columns:
+            conn.execute("""
+                ALTER TABLE reports
+                ADD COLUMN completed_at TEXT
+            """)
+
         conn.commit()
 
 
 init_reports_table()
+
+
+def safe_report_path(raw_path):
+    """Only accept PDF paths inside the reports directory."""
+
+    if not raw_path:
+        return None
+
+    try:
+        candidate = Path(raw_path).resolve()
+        candidate.relative_to(REPORTS_DIR.resolve())
+        return candidate
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+def find_reusable_report(conn, today):
+    """Find today's active job or a completed report with an existing file."""
+
+    rows = conn.execute("""
+        SELECT id, path, created_at, status, error
+        FROM reports
+        WHERE date(created_at) = ?
+          AND status IN ('queued', 'processing', 'completed')
+        ORDER BY id DESC
+    """, (today,)).fetchall()
+
+    for report in rows:
+        if report["status"] in ("queued", "processing"):
+            return report
+
+        if report["status"] == "completed":
+            report_path = safe_report_path(report["path"])
+
+            if report_path is not None and report_path.is_file():
+                return report
+
+    return None
+
+
+def generate_report_job(report_id: int):
+    """Generate a PDF in the background and persist its job status."""
+
+    output_path = REPORTS_DIR / f"{report_id}.pdf"
+
+    try:
+        # Mark the job as processing.
+        with closing(
+            sqlite3.connect(DB_PATH, timeout=30)
+        ) as conn:
+            cursor = conn.execute("""
+                UPDATE reports
+                SET status = 'processing',
+                    error = NULL
+                WHERE id = ?
+                  AND status = 'queued'
+            """, (report_id,))
+
+            conn.commit()
+
+            if cursor.rowcount == 0:
+                logger.warning(
+                    "Report job %s was not queued.",
+                    report_id,
+                )
+                return
+
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Render the HTML report into a PDF file.
+        generated_path = Path(
+            render_report_pdf(output_path)
+        ).resolve()
+
+        # Validate the generated artifact.
+        if safe_report_path(str(generated_path)) is None:
+            raise ValueError(
+                "Generated PDF is outside the reports directory."
+            )
+
+        if not generated_path.is_file():
+            raise FileNotFoundError(
+                "The generated PDF file does not exist."
+            )
+
+        completed_at = datetime.now().isoformat(
+            timespec="seconds"
+        )
+
+        # Persist the completed artifact and status.
+        with closing(
+            sqlite3.connect(DB_PATH, timeout=30)
+        ) as conn:
+            conn.execute("""
+                UPDATE reports
+                SET path = ?,
+                    status = 'completed',
+                    error = NULL,
+                    completed_at = ?
+                WHERE id = ?
+            """, (
+                str(generated_path),
+                completed_at,
+                report_id,
+            ))
+
+            conn.commit()
+
+        logger.info(
+            "Report %s completed: %s",
+            report_id,
+            generated_path,
+        )
+
+    except Exception:
+        logger.exception(
+            "Failed to generate report %s",
+            report_id,
+        )
+
+        try:
+            output_path.unlink(missing_ok=True)
+        except OSError:
+            logger.exception(
+                "Could not remove incomplete PDF for report %s",
+                report_id,
+            )
+
+        completed_at = datetime.now().isoformat(
+            timespec="seconds"
+        )
+
+        with closing(
+            sqlite3.connect(DB_PATH, timeout=30)
+        ) as conn:
+            conn.execute("""
+                UPDATE reports
+                SET path = '',
+                    status = 'failed',
+                    error = 'Failed to generate PDF report.',
+                    completed_at = ?
+                WHERE id = ?
+            """, (completed_at, report_id))
+
+            conn.commit()
 
 
 @app.get("/health")
@@ -49,118 +236,97 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/reports", status_code=status.HTTP_201_CREATED)
+@app.post("/reports", status_code=status.HTTP_202_ACCEPTED)
 def create_report(
+    background_tasks: BackgroundTasks,
     response: Response,
     payload: ReportRequest | None = None,
 ):
-    """Generate a report or reuse today's existing report."""
+    """Queue a report job and return without waiting for PDF rendering."""
 
     force = payload.force if payload is not None else False
 
-    # Prevent simultaneous requests in this process from
-    # generating duplicate reports.
     with REPORT_LOCK:
+        with closing(
+            sqlite3.connect(DB_PATH, timeout=30)
+        ) as conn:
+            conn.row_factory = sqlite3.Row
 
-        # Return today's existing report unless force=True.
-        if not force:
-            today = date.today().isoformat()
+            # Serialize the lookup and insertion transaction.
+            conn.execute("BEGIN IMMEDIATE")
 
-            with closing(sqlite3.connect(DB_PATH)) as conn:
-                conn.row_factory = sqlite3.Row
+            try:
+                existing = None
 
-                existing_reports = conn.execute("""
-                    SELECT id, path, created_at
-                    FROM reports
-                    WHERE date(created_at) = ?
-                      AND path <> ''
-                    ORDER BY id DESC
-                """, (today,)).fetchall()
-
-            for existing in existing_reports:
-                try:
-                    existing_path = Path(
-                        existing["path"]
-                    ).resolve()
-
-                    existing_path.relative_to(
-                        REPORTS_DIR.resolve()
+                if not force:
+                    existing = find_reusable_report(
+                        conn,
+                        date.today().isoformat(),
                     )
-                except (OSError, ValueError):
-                    continue
 
-                if existing_path.is_file():
-                    response.status_code = (
-                        status.HTTP_200_OK
-                    )
+                if existing is not None:
+                    conn.commit()
+
+                    response.status_code = status.HTTP_200_OK
 
                     return {
                         "id": existing["id"],
+                        "status": existing["status"],
+                        "status_url": (
+                            f"/reports/{existing['id']}"
+                        ),
                         "file": (
                             f"/reports/{existing['id']}/file"
                         ),
                     }
 
-        # No reusable report exists, or force=True.
-        created_at = datetime.now().isoformat(
-            timespec="seconds"
-        )
-
-        with closing(sqlite3.connect(DB_PATH)) as conn:
-            cursor = conn.execute("""
-                INSERT INTO reports (path, created_at)
-                VALUES (?, ?)
-            """, ("", created_at))
-
-            report_id = cursor.lastrowid
-            conn.commit()
-
-        output_path = REPORTS_DIR / f"{report_id}.pdf"
-
-        try:
-            # Generate the PDF and store it on disk.
-            generated_path = render_report_pdf(output_path)
-
-            # Store the generated file path in SQLite.
-            with closing(sqlite3.connect(DB_PATH)) as conn:
-                conn.execute("""
-                    UPDATE reports
-                    SET path = ?
-                    WHERE id = ?
-                """, (str(generated_path), report_id))
-
-                conn.commit()
-
-        except Exception as exc:
-            with closing(sqlite3.connect(DB_PATH)) as conn:
-                conn.execute(
-                    "DELETE FROM reports WHERE id = ?",
-                    (report_id,),
+                created_at = datetime.now().isoformat(
+                    timespec="seconds"
                 )
+
+                cursor = conn.execute("""
+                    INSERT INTO reports (
+                        path,
+                        created_at,
+                        status,
+                        error,
+                        completed_at
+                    )
+                    VALUES ('', ?, 'queued', NULL, NULL)
+                """, (created_at,))
+
+                report_id = cursor.lastrowid
                 conn.commit()
 
-            output_path.unlink(missing_ok=True)
+            except Exception:
+                conn.rollback()
+                raise
 
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to generate PDF report.",
-            ) from exc
+    # FastAPI schedules this function after sending the response.
+    background_tasks.add_task(
+        generate_report_job,
+        report_id,
+    )
 
-        return {
-            "id": report_id,
-            "file": f"/reports/{report_id}/file",
-        }
+    return {
+        "id": report_id,
+        "status": "queued",
+        "status_url": f"/reports/{report_id}",
+        "file": f"/reports/{report_id}/file",
+    }
 
 
 @app.get("/reports/{report_id}")
 def get_report(report_id: int):
-    """Return report metadata and its download link."""
+    """Return the job status and report metadata."""
 
-    with closing(sqlite3.connect(DB_PATH)) as conn:
+    with closing(
+        sqlite3.connect(DB_PATH, timeout=30)
+    ) as conn:
         conn.row_factory = sqlite3.Row
 
         report = conn.execute("""
-            SELECT id, path, created_at
+            SELECT id, path, created_at, status, error, completed_at
             FROM reports
             WHERE id = ?
         """, (report_id,)).fetchone()
@@ -171,44 +337,56 @@ def get_report(report_id: int):
             detail="Report not found.",
         )
 
-    return {
+    result = {
         "id": report["id"],
         "created_at": report["created_at"],
+        "status": report["status"],
+        "completed_at": report["completed_at"],
         "file": f"/reports/{report_id}/file",
     }
+
+    if report["error"]:
+        result["error"] = report["error"]
+
+    return result
 
 
 @app.get("/reports/{report_id}/file")
 def download_report(report_id: int):
-    """Serve the PDF file from disk."""
+    """Download the PDF after the background job completes."""
 
-    with closing(sqlite3.connect(DB_PATH)) as conn:
+    with closing(
+        sqlite3.connect(DB_PATH, timeout=30)
+    ) as conn:
         conn.row_factory = sqlite3.Row
 
         report = conn.execute("""
-            SELECT id, path
+            SELECT id, path, status
             FROM reports
             WHERE id = ?
         """, (report_id,)).fetchone()
 
-    if report is None or not report["path"]:
+    if report is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Report not found.",
         )
 
-    report_path = Path(report["path"]).resolve()
-    reports_root = REPORTS_DIR.resolve()
-
-    try:
-        report_path.relative_to(reports_root)
-    except ValueError as exc:
+    if report["status"] in ("queued", "processing"):
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report file not found.",
-        ) from exc
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Report is not ready yet.",
+        )
 
-    if not report_path.is_file():
+    if report["status"] == "failed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Report generation failed.",
+        )
+
+    report_path = safe_report_path(report["path"])
+
+    if report_path is None or not report_path.is_file():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Report file not found.",
